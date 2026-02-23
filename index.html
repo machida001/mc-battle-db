@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MCバトル戦績DB（分析）</title>
+  <style>
+    :root{
+      --bg:#0b0c10; --card:#11131a; --text:#e8e8ea; --muted:#a8acb8; --line:#24283a; --chip:#0e1020;
+      --good:#8bff9c; --bad:#ff8b8b;
+    }
+    body{ margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+      background: linear-gradient(180deg, #0b0c10, #080912); color:var(--text); }
+    a{ color:inherit; }
+    header{ max-width:1180px; margin:0 auto; padding:22px 16px 10px; display:flex; gap:12px; align-items:flex-end; justify-content:space-between; }
+    h1{ margin:0; font-size:18px; letter-spacing:.02em; }
+    .meta{ color:var(--muted); font-size:12px; }
+    main{ max-width:1180px; margin:0 auto; padding: 0 16px 40px; display:grid; grid-template-columns: 360px 1fr; gap:12px; }
+    @media (max-width: 980px){ main{ grid-template-columns: 1fr; } }
+    .card{ background:rgba(17,19,26,.92); border:1px solid var(--line); border-radius:16px; padding:14px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+    .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    input, select, button{
+      background:var(--chip); color:var(--text); border:1px solid var(--line);
+      border-radius:12px; padding:10px 12px; font-size:14px; outline:none;
+    }
+    input::placeholder{ color:#6f7486; }
+    button{ cursor:pointer; }
+    button:hover{ filter: brightness(1.08); }
+    .kpi{ display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; }
+    .kpi > div{ background:var(--chip); border:1px solid var(--line); border-radius:14px; padding:10px; }
+    .kpi .v{ font-size:18px; font-weight:800; }
+    .kpi .l{ font-size:12px; color:var(--muted); }
+    table{ width:100%; border-collapse: collapse; font-size:13.5px; }
+    th, td{ padding:10px 8px; border-bottom:1px solid var(--line); vertical-align: top; }
+    th{ text-align:left; color:var(--muted); font-weight:600; }
+    .tag{ display:inline-block; padding:3px 8px; border:1px solid var(--line); border-radius:999px; font-size:12px; color:var(--muted); }
+    .good{ color:var(--good); font-weight:800; }
+    .bad{ color:var(--bad); font-weight:800; }
+    .small{ font-size:12px; color:var(--muted); }
+    .tabs{ display:flex; gap:8px; flex-wrap:wrap; }
+    .tab{ border-radius:999px; padding:8px 10px; border:1px solid var(--line); background:transparent; cursor:pointer; }
+    .tab.active{ background:var(--chip); }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>MCバトル戦績DB（分析）</h1>
+    <div class="meta" id="meta">loading...</div>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab active" id="tab_dashboard">ダッシュボード</button>
+    <button class="tab" id="tab_mc">MC分析</button>
+    <button class="tab" id="tab_matches">試合検索</button>
+  </div>
+</header>
+
+<main>
+  <section class="card" id="leftPanel">
+    <div id="filters"></div>
+  </section>
+
+  <section class="card" id="rightPanel">
+    <div id="content"></div>
+  </section>
+</main>
+
+<script>
+let DATA=null;
+
+const el = (id)=>document.getElementById(id);
+const esc = (s)=>String(s??"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+function setActiveTab(which){
+  for(const id of ["dashboard","mc","matches"]){
+    el("tab_"+id).classList.toggle("active", id===which);
+  }
+}
+
+function kpiBlock(meta){
+  return `
+  <div class="kpi" style="margin-bottom:12px;">
+    <div><div class="v">${meta.mc_count}</div><div class="l">MC数（登場）</div></div>
+    <div><div class="v">${meta.battles_count}</div><div class="l">大会数</div></div>
+    <div><div class="v">${meta.results_count}</div><div class="l">試合数</div></div>
+    <div><div class="v mono">${esc(meta.generated_at)}</div><div class="l">生成日時</div></div>
+  </div>`;
+}
+
+function winRate(w,l){
+  const d=w+l;
+  if(!d) return "-";
+  return (Math.round((w/d)*1000)/10).toFixed(1) + "%";
+}
+
+function buildIndices(){
+  const battlesById = new Map(DATA.battles.map(b=>[String(b.id), b]));
+  const years = Array.from(new Set(DATA.results.map(r=>String(r.year)).filter(Boolean))).sort();
+  const brands = Array.from(new Set(DATA.results.map(r=>r.brand).filter(Boolean))).sort();
+  return { battlesById, years, brands };
+}
+
+function viewDashboard(){
+  setActiveTab("dashboard");
+  const {years, brands} = buildIndices();
+
+  el("filters").innerHTML = `
+    <h2 style="margin:0 0 10px; font-size:16px;">フィルタ</h2>
+    <div class="row">
+      <select id="f_year">
+        <option value="">年（全部）</option>
+        ${years.map(y=>`<option>${esc(y)}</option>`).join("")}
+      </select>
+      <select id="f_brand">
+        <option value="">シリーズ（全部）</option>
+        ${brands.map(b=>`<option>${esc(b)}</option>`).join("")}
+      </select>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <input id="f_q" placeholder="検索（MC名/大会/会場など）" style="flex:1; min-width:220px;" />
+    </div>
+    <div class="small" style="margin-top:10px;">
+      ※「勝率」は <span class="mono">W/(W+L)</span> のみ（不明試合は除外）。
+    </div>
+  `;
+
+  const render = ()=>{
+    const fy = el("f_year").value;
+    const fb = el("f_brand").value;
+    const q = (el("f_q").value||"").toLowerCase().trim();
+
+    // filter results first, then recompute stats quickly in-browser
+    const filtered = DATA.results.filter(r=>{
+      if(fy && String(r.year)!==fy) return false;
+      if(fb && String(r.brand)!==fb) return false;
+      if(q){
+        const hay = `${r.first_mc} ${r.second_mc} ${r.winner} ${r.loser} ${r.title} ${r.location} ${r.stage} ${r.phase}`.toLowerCase();
+        if(!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    // recompute
+    const m = new Map();
+    const add = (name, won)=>{
+      if(!name) return;
+      const s = m.get(name) || {name, matches:0, wins:0, losses:0, unknown:0};
+      s.matches++;
+      if(won===true) s.wins++;
+      else if(won===false) s.losses++;
+      else s.unknown++;
+      m.set(name, s);
+    }
+    for(const r of filtered){
+      let outA=null, outB=null;
+      if(r.winner && r.loser){
+        if(r.winner===r.first_mc && r.loser===r.second_mc){ outA=true; outB=false; }
+        else if(r.winner===r.second_mc && r.loser===r.first_mc){ outA=false; outB=true; }
+      }
+      add(r.first_mc, outA);
+      add(r.second_mc, outB);
+    }
+    const list = Array.from(m.values()).map(s=>{
+      const denom=s.wins+s.losses;
+      return {...s, decisions:denom, win_rate: denom ? Math.round((s.wins/denom)*1000)/10 : null};
+    }).sort((a,b)=>{
+      const aw=a.wins, bw=b.wins;
+      if(bw!==aw) return bw-aw;
+      const ar=a.win_rate??-1, br=b.win_rate??-1;
+      if(br!==ar) return br-ar;
+      return (b.matches-a.matches);
+    });
+
+    const top = list.slice(0, 40);
+
+    el("content").innerHTML = `
+      ${kpiBlock(DATA.meta)}
+      <div class="row" style="justify-content:space-between; margin-bottom:8px;">
+        <div class="muted">ランキング（フィルタ後：上位40）</div>
+        <div class="small"><span class="tag">${filtered.length}試合 / ${list.length}MC</span></div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>MC</th>
+            <th>勝</th>
+            <th>敗</th>
+            <th>勝率</th>
+            <th>試合</th>
+            <th>不明</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${top.map((s,i)=>`
+            <tr>
+              <td>${i+1}</td>
+              <td><a href="#mc=${encodeURIComponent(s.name)}"><b>${esc(s.name)}</b></a></td>
+              <td class="good">${s.wins}</td>
+              <td class="bad">${s.losses}</td>
+              <td>${s.win_rate==null ? "-" : (s.win_rate.toFixed(1)+"%")}</td>
+              <td>${s.matches}</td>
+              <td class="small">${s.unknown}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      <div class="small" style="margin-top:10px;">
+        MC名クリックで詳細へ。URLの <span class="mono">#mc=...</span> を共有すれば、そのMCの分析ページを直リンクできます。
+      </div>
+    `;
+  };
+
+  el("f_year").addEventListener("change", render);
+  el("f_brand").addEventListener("change", render);
+  el("f_q").addEventListener("input", render);
+  render();
+}
+
+function viewMC(name){
+  setActiveTab("mc");
+  const s = DATA.mc_stats.find(x=>x.name===name);
+  if(!s){
+    el("filters").innerHTML = `<div class="small">MCが見つかりません：<b>${esc(name)}</b></div>`;
+    el("content").innerHTML = "";
+    return;
+  }
+  // filters left
+  el("filters").innerHTML = `
+    <h2 style="margin:0 0 10px; font-size:16px;">MC分析</h2>
+    <div class="row">
+      <input id="mc_q" placeholder="MC検索（名前）" style="flex:1; min-width:220px;" />
+      <button id="mc_go">開く</button>
+    </div>
+    <div class="small" style="margin-top:10px;">
+      例：呂布カルマ / Disry / NAIKA MC
+    </div>
+    <hr style="border:none; border-top:1px solid var(--line); margin:14px 0;">
+    <button id="back_dash">← ダッシュボード</button>
+  `;
+  el("back_dash").onclick = ()=>{ location.hash=""; };
+
+  const mcGo=()=>{
+    const q=(el("mc_q").value||"").trim();
+    if(!q) return;
+    location.hash = `mc=${encodeURIComponent(q)}`;
+  };
+  el("mc_go").onclick=mcGo;
+  el("mc_q").addEventListener("keydown",(e)=>{ if(e.key==="Enter") mcGo(); });
+
+  // derive recent matches
+  const matches = DATA.results
+    .filter(r=>r.first_mc===name || r.second_mc===name)
+    .sort((a,b)=> String(b.date||"").localeCompare(String(a.date||"")));
+
+  const decided = matches.filter(r=>r.winner && r.loser);
+
+  const last20 = decided.slice(0, 20).map(r=>{
+    const opp = (r.first_mc===name) ? r.second_mc : r.first_mc;
+    const won = (r.winner===name);
+    return {r, opp, won};
+  });
+
+  // toughest opponents (min 3 matches)
+  const vs = Object.entries(s.vs||{}).map(([opp,v])=>({opp, ...v, rate: (v.wins+v.losses) ? v.wins/(v.wins+v.losses) : null}))
+    .filter(x=>x.matches>=3)
+    .sort((a,b)=> (b.matches-a.matches));
+
+  // yearly
+  const byYear = Object.entries(s.by_year||{}).map(([y,v])=>({year:y, ...v, rate: (v.wins+v.losses) ? v.wins/(v.wins+v.losses) : null}))
+    .sort((a,b)=> String(b.year).localeCompare(String(a.year)));
+
+  el("content").innerHTML = `
+    <div class="row" style="justify-content:space-between; margin-bottom:8px;">
+      <div><span class="tag">MC</span> <span style="font-size:18px; font-weight:900;">${esc(name)}</span></div>
+      <div class="small"><span class="tag">共有リンク</span> <span class="mono">#mc=${esc(encodeURIComponent(name))}</span></div>
+    </div>
+
+    <div class="kpi" style="margin-bottom:12px;">
+      <div><div class="v">${s.matches}</div><div class="l">試合（登場）</div></div>
+      <div><div class="v good">${s.wins}</div><div class="l">勝ち</div></div>
+      <div><div class="v bad">${s.losses}</div><div class="l">負け</div></div>
+      <div><div class="v">${s.win_rate==null? "-" : (s.win_rate.toFixed(1)+"%")}</div><div class="l">勝率（W/(W+L)）</div></div>
+    </div>
+
+    <div class="row" style="gap:14px; align-items:flex-start;">
+      <div style="flex:1; min-width:320px;">
+        <div class="muted" style="margin-bottom:6px;">直近20（勝敗が判明している試合）</div>
+        <table>
+          <thead><tr><th>日付</th><th>大会</th><th>相手</th><th>結果</th><th>動画</th></tr></thead>
+          <tbody>
+            ${last20.map(({r,opp,won})=>`
+              <tr>
+                <td>${esc(r.date||"")}</td>
+                <td>${esc(r.title||"")}</td>
+                <td><a href="#mc=${encodeURIComponent(opp)}">${esc(opp)}</a></td>
+                <td>${won ? '<span class="good">W</span>' : '<span class="bad">L</span>'}</td>
+                <td>${r.movie_url ? `<a href="${esc(r.movie_url)}" target="_blank" rel="noopener">link</a>` : '<span class="small">-</span>'}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+
+      <div style="width:360px; max-width:100%;">
+        <div class="muted" style="margin-bottom:6px;">年別</div>
+        <table>
+          <thead><tr><th>年</th><th>勝</th><th>敗</th><th>勝率</th><th>試合</th></tr></thead>
+          <tbody>
+            ${byYear.slice(0, 12).map(y=>`
+              <tr>
+                <td>${esc(y.year)}</td>
+                <td class="good">${y.wins}</td>
+                <td class="bad">${y.losses}</td>
+                <td>${y.rate==null? "-" : (Math.round(y.rate*1000)/10).toFixed(1)+"%"}</td>
+                <td>${y.matches}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+
+        <div class="muted" style="margin:14px 0 6px;">対戦相手（頻度上位 / 3戦以上）</div>
+        <table>
+          <thead><tr><th>相手</th><th>勝</th><th>敗</th><th>勝率</th><th>試合</th></tr></thead>
+          <tbody>
+            ${vs.slice(0, 12).map(v=>`
+              <tr>
+                <td><a href="#mc=${encodeURIComponent(v.opp)}">${esc(v.opp)}</a></td>
+                <td class="good">${v.wins}</td>
+                <td class="bad">${v.losses}</td>
+                <td>${v.rate==null? "-" : (Math.round(v.rate*1000)/10).toFixed(1)+"%"}</td>
+                <td>${v.matches}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="small" style="margin-top:12px;">
+      ※データ上「勝者/敗者が空欄」の試合は集計から除外されます（不明扱い）。
+    </div>
+  `;
+}
+
+function viewMatches(){
+  setActiveTab("matches");
+  const {years, brands} = buildIndices();
+
+  el("filters").innerHTML = `
+    <h2 style="margin:0 0 10px; font-size:16px;">試合検索</h2>
+    <div class="row">
+      <input id="m_q" placeholder="検索（MC名/大会/会場/フェーズ）" style="flex:1; min-width:220px;" />
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <select id="m_year"><option value="">年（全部）</option>${years.map(y=>`<option>${esc(y)}</option>`).join("")}</select>
+      <select id="m_brand"><option value="">シリーズ（全部）</option>${brands.map(b=>`<option>${esc(b)}</option>`).join("")}</select>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <select id="m_decided">
+        <option value="1">勝敗が判明のみ</option>
+        <option value="">全部（不明含む）</option>
+      </select>
+      <select id="m_sort">
+        <option value="date_desc">日付：新しい順</option>
+        <option value="date_asc">日付：古い順</option>
+      </select>
+    </div>
+    <div class="small" style="margin-top:10px;">
+      例：<span class="mono">呂布カルマ</span> / <span class="mono">Best8</span> / <span class="mono">大阪</span>
+    </div>
+  `;
+
+  const render=()=>{
+    const q=(el("m_q").value||"").toLowerCase().trim();
+    const y=el("m_year").value;
+    const b=el("m_brand").value;
+    const decided=el("m_decided").value;
+    const sort=el("m_sort").value;
+
+    let list = DATA.results.slice();
+
+    if(y) list=list.filter(r=>String(r.year)===y);
+    if(b) list=list.filter(r=>String(r.brand)===b);
+    if(decided) list=list.filter(r=>r.winner && r.loser);
+
+    if(q){
+      list=list.filter(r=>{
+        const hay = `${r.first_mc} ${r.second_mc} ${r.winner} ${r.loser} ${r.title} ${r.location} ${r.stage} ${r.phase}`.toLowerCase();
+        return hay.includes(q);
+      });
+    }
+
+    list.sort((a,b)=>{
+      return sort==="date_asc"
+        ? String(a.date||"").localeCompare(String(b.date||""))
+        : String(b.date||"").localeCompare(String(a.date||""));
+    });
+
+    const show=list.slice(0, 200); // keep it snappy
+
+    el("content").innerHTML = `
+      <div class="row" style="justify-content:space-between; margin-bottom:8px;">
+        <div class="muted">検索結果（最大200件表示）</div>
+        <div class="small"><span class="tag">${list.length}件</span></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>日付</th><th>大会</th><th>フェーズ</th><th>先</th><th>後</th><th>勝</th><th>動画</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${show.map(r=>`
+            <tr>
+              <td>${esc(r.date||"")}</td>
+              <td>${esc(r.title||"")}</td>
+              <td>${esc(r.phase||"")}</td>
+              <td><a href="#mc=${encodeURIComponent(r.first_mc)}">${esc(r.first_mc)}</a></td>
+              <td><a href="#mc=${encodeURIComponent(r.second_mc)}">${esc(r.second_mc)}</a></td>
+              <td>${r.winner ? `<b>${esc(r.winner)}</b>` : `<span class="small">不明</span>`}</td>
+              <td>${r.movie_url ? `<a href="${esc(r.movie_url)}" target="_blank" rel="noopener">link</a>` : '<span class="small">-</span>'}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      <div class="small" style="margin-top:10px;">※表示は200件まで。絞り込みで絞ると軽くなります。</div>
+    `;
+  };
+
+  el("m_q").addEventListener("input", render);
+  el("m_year").addEventListener("change", render);
+  el("m_brand").addEventListener("change", render);
+  el("m_decided").addEventListener("change", render);
+  el("m_sort").addEventListener("change", render);
+  render();
+}
+
+function route(){
+  const h = location.hash.replace(/^#/, "");
+  if(h.startsWith("mc=")){
+    const name = decodeURIComponent(h.slice(3));
+    viewMC(name);
+    return;
+  }
+  // default
+  viewDashboard();
+}
+
+async function init(){
+const res = await fetch("https://docs.google.com/spreadsheets/d/e/2PACX-1vRekGd_4VBAPuh0VO5djc1DxJHWIy7lGdho0RLj2BjLP3XbxceZeN7RG8MkHM1xcQ/pub?gid=231524939&single=true&output=csv");
+  DATA = await res.json();
+  el("meta").textContent = `MC:${DATA.meta.mc_count} / 大会:${DATA.meta.battles_count} / 試合:${DATA.meta.results_count}  | 生成:${DATA.meta.generated_at}`;
+
+  // Tabs
+  el("tab_dashboard").onclick=()=>{ location.hash=""; };
+  el("tab_mc").onclick=()=>{ location.hash="mc=" + encodeURIComponent(DATA.mc_stats[0]?.name || ""); };
+  el("tab_matches").onclick=()=>{ viewMatches(); setActiveTab("matches"); };
+
+  // route + hash change
+  window.addEventListener("hashchange", route);
+
+  // If user clicks "試合検索", don't destroy hash route.
+  // We'll treat it as non-hash view; keep a simple state flag.
+  el("tab_matches").addEventListener("click", ()=>{
+    // overwrite router temporarily by rendering matches and set tab
+    viewMatches();
+  });
+
+  route();
+}
+
+init().catch(e=>{
+  el("content").innerHTML = `<div class="bad">読み込みエラー：${esc(e?.message||e)}</div>`;
+});
+</script>
+</body>
+</html>
